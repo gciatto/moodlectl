@@ -788,6 +788,29 @@ class BrowserMoodle(AbstractContextManager):
         if not any(r.cmid == cmid for r in self.list_resources(course_id)):
             raise MoodleFormError(f"Resource cmid={cmid} missing after edit; inspect manually")
 
+    def move_resource(self, course_id: int, cmid: int, *, before: int) -> None:
+        """Move module `cmid` just above module `before` (in its section), as the course
+        page's drag and drop does, and check the new order."""
+        if cmid == before:
+            raise moodlectlError("A module cannot be moved above itself")
+        self._writing()
+        cmids = [r.cmid for r in self.list_resources(course_id)]
+        for c in (cmid, before):
+            if c not in cmids:
+                raise moodlectlError(f"Module cmid={c} not found in course {course_id}")
+        p = self._goto(f"/course/view.php?id={int(course_id)}")
+        self._ajax(
+            p,
+            "core_courseformat_update_course",
+            action="cm_move",
+            courseid=course_id,
+            ids=[cmid],
+            targetcmid=before,
+        )
+        cmids = [r.cmid for r in self.list_resources(course_id)]
+        if cmid not in cmids or cmids.index(cmid) + 1 != cmids.index(before):
+            raise MoodleFormError(f"Moodle answered, but cmid={cmid} is not above cmid={before}")
+
     # --- Forums -------------------------------------------------------------------------
 
     @staticmethod

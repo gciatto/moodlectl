@@ -46,7 +46,10 @@ on ubuntu/windows/macos x Python 3.10-3.13, then the semantic-release deploy.
   cookies, page cache): login and course/section/resource scraping in `browser.py`.
 - Implemented but **not validated against a live Moodle**: resource add/update/inspect
   forms. Their selectors were derived from screenshots of Unibo Virtuale.
-- Supported writes: create `url` and `page`, update `url`. Other `kind`s go through
+- Supported writes: create `url` and `page`, update `url`, move any module.
+  `move_resource` calls `core_courseformat_update_course` (`cm_move`, `targetcmid`) through
+  `AJAX_JS`, the course page's drag and drop, then re-reads the order; validated live on
+  Virtuale (2026-10-13). Other `kind`s go through
   the generic `modedit.php?add=<kind>` path and need site-specific `fields`.
 - Forums (`list_forums`, `list_discussions`, `list_posts`, `add_discussion`, `reply`,
   `edit_post`, `delete_post`, `set_discussion`) were validated live on Virtuale (Moodle

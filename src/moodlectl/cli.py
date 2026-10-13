@@ -417,6 +417,20 @@ def update_url(
     typer.echo(f"updated: {cmid}")
 
 
+@resources.command("move")
+def move(
+    ctx: typer.Context,
+    cmids: list[int] = typer.Argument(..., help="Modules to move, in their new order"),
+    before: int = typer.Option(..., "--before", help="cmid of the module they go above"),
+    course: Optional[int] = typer.Option(None, "--course"),
+):
+    """Move modules just above another one, keeping the order given."""
+    with browser(ctx) as moodle:
+        for cmid in cmids:
+            moodle.move_resource(_cid(ctx, course), cmid, before=before)
+    typer.echo(f"moved: {' '.join(map(str, cmids))} above {before}")
+
+
 @forums.command("list")
 def forums_list(
     ctx: typer.Context,

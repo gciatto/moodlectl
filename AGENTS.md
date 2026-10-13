@@ -46,8 +46,18 @@ on ubuntu/windows/macos x Python 3.10-3.13, then the semantic-release deploy.
   cookies, page cache): login and course/section/resource scraping in `browser.py`.
 - Implemented but **not validated against a live Moodle**: resource add/update/inspect
   forms. Their selectors were derived from screenshots of Unibo Virtuale.
-- Supported writes: create `url` and `page`, update `url`. Other `kind`s go through
-  the generic `modedit.php?add=<kind>` path and need site-specific `fields`.
+- Supported writes: create `url`, `page` and `resource` (File), update `url` and
+  `resource`. A File's upload reuses the forum attachments' draft upload (`_upload`,
+  now taking the file field's selector); `update_file` first empties the draft area
+  through `draftfiles_ajax.php` (`list`, `delete`), and both writes then download
+  `mod/resource/view.php?id=<cmid>&redirect=1` and compare it with the local file.
+  Validated live on Virtuale (2026-10-13): `add-file`, `update-file` with and without a
+  file, `--visible`. There the form's id is `mform1_<random>` (match `form:has(#id_name)`),
+  section toggles work only after the `load` event (`_expand_all`), and site CSS hides
+  `#fitem_id_visible`, so visibility goes through `core_course_edit_module` show/hide
+  (`_set_visible`). `resources list` still reports hidden modules as visible.
+  Other `kind`s go through the generic `modedit.php?add=<kind>` path and need
+  site-specific `fields`.
 - Forums (`list_forums`, `list_discussions`, `list_posts`, `add_discussion`, `reply`,
   `edit_post`, `delete_post`, `set_discussion`) were validated live on Virtuale (Moodle
   4.5). There only flagged-`ajax` web services work via `AJAX_JS`: the post listing and
@@ -56,8 +66,8 @@ on ubuntu/windows/macos x Python 3.10-3.13, then the semantic-release deploy.
   `mod_forum_set_lock_state`'s `targetstate` is the current lock time (0 locks).
   Attachments go to the form's draft itemid via `repository_ajax.php?action=upload`
   (`page.request`, same cookies), repo id scraped from the page's filepicker options.
-- Not implemented: `label` (rejected in `ResourceSpec.validate()`), resource file
-  uploads, resource deletion, section creation, access restrictions.
+- Not implemented: `label` (rejected in `ResourceSpec.validate()`), File resources
+  with folders or several files, resource deletion, section creation, access restrictions.
 - `static-checks` and tests pass; keep it that way before committing.
 
 ## Conventions and gotchas

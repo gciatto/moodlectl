@@ -137,6 +137,12 @@ moodlectl resources add-url "L2 - My lecture" \
 moodlectl resources update-url 12345 --name "Updated title" \
   --url https://example.org/new.pdf --description '[Slides](https://example.org/)'
 
+# Upload a local file as a File resource, then replace its file in place: the cmid,
+# and so every link to the resource, stays; the served file is checked after saving
+moodlectl resources add-file "M5 - Agents" slides/m5.pdf --section "Module 2"
+moodlectl resources update-file 12346 slides/m5.pdf
+moodlectl resources update-file 12346 --fields '{"#id_showsize": true}'  # settings only
+
 # Create a Page resource (editor support varies per site, see below)
 moodlectl resources add-page "Course info" --content "<p>Hello</p>" --section "Module 2"
 
@@ -212,6 +218,9 @@ resources:
     display: "Open" # Must match a dropdown label in the site's UI; optional
     fields:
       "#id_visible": "0" # Arbitrary form fields; optional
+  - kind: resource # a File resource
+    name: "M5 - Agents"
+    file: "slides/m5.pdf" # Relative to this manifest
 ```
 
 `resources sync` is a **preview** unless `--apply` is provided. The batch stops
@@ -231,7 +240,9 @@ fields provided in `fields`, but those kinds are experimental. An adapter
 for Moodle `page` resources is also included; it recognizes plain textarea,
 Atto contenteditable and TinyMCE iframe configurations.
 `page` remains dependent on the specific site's editor configuration; test on
-an expendable course first. File uploads, labels, activity deletion, complex
+an expendable course first. `resource` (File) modules take a local `file`:
+it is uploaded through the form's file manager, which is emptied first on
+`update-file`, and the file Moodle serves afterwards is compared with it. Labels, activity deletion, complex
 access restrictions and section creation are not implemented. Custom form
 fields accommodate additional activity settings where Moodle exposes them.
 
@@ -317,7 +328,7 @@ with MoodleREST("https://virtuale.unibo.it") as ws:
 
 * Validated live on Virtuale (Moodle 4.5): login, course/section/resource listings
   and all forum commands. Resource **writes** (`add-url`, `add-page`, `update-url`,
-  `sync`) match screenshots of the forms but are not yet validated live. Site
+  `add-file`, `update-file`, `sync`) match screenshots of the forms but are not yet validated live. Site
   plugins, roles, Moodle versions and updates can change selectors or permissions.
 * Moodle core REST exposes course reading and module management functions,
   but resource creation is not universally exposed as a generic external

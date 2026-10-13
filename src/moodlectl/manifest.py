@@ -39,6 +39,8 @@ def load_manifest(path: str | Path) -> Batch:
         unknown = set(item) - fields
         if unknown:
             raise moodlectlError(f"Resource {i}: unknown fields: {sorted(unknown)}")
+        if isinstance(item.get("file"), str):
+            item = {**item, "file": Path(path).parent / item["file"]}  # relative to the manifest
         try:
             spec = ResourceSpec(**item)
             spec.validate()

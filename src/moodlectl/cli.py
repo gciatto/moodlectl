@@ -417,6 +417,66 @@ def update_url(
     typer.echo(f"updated: {cmid}")
 
 
+@resources.command("add-file")
+def add_file(
+    ctx: typer.Context,
+    name: str = typer.Argument(...),
+    file: str = typer.Argument(..., help="Local file to upload"),
+    section: str = typer.Option(..., "--section", help="Section number or title"),
+    course: Optional[int] = typer.Option(None, "--course"),
+    description: str = typer.Option("", "--description"),
+    text_format: str = typer.Option("markdown", "--format"),
+    show_description: bool = typer.Option(False, "--show-description"),
+    hidden: bool = typer.Option(False, "--hidden"),
+    display: Optional[str] = typer.Option(None, "--display", help="Moodle display mode label"),
+    fields: str = typer.Option("{}", "--fields"),
+    if_exists: str = typer.Option("skip", "--if-exists", help="skip or error"),
+):
+    """Create a File resource from a local file."""
+    if if_exists not in ("skip", "error"):
+        raise moodlectlError("--if-exists supports skip or error")
+    spec = ResourceSpec(
+        kind="resource",
+        name=name,
+        file=file,
+        description=description,
+        description_format=cast(Format, text_format),  # checked by ResourceSpec.validate()
+        show_description=show_description,
+        visible=False if hidden else None,
+        display=display,
+        fields=_parse_json_object(fields),
+    )
+    with browser(ctx) as moodle:
+        result = moodle.add_resource(_cid(ctx, course), section, spec, if_exists=if_exists)
+    typer.echo(f"{result}: {name}")
+
+
+@resources.command("update-file")
+def update_file(
+    ctx: typer.Context,
+    cmid: int,
+    file: Optional[str] = typer.Argument(
+        None, help="Local file replacing the current one; omit to change settings only"
+    ),
+    course: Optional[int] = typer.Option(None, "--course"),
+    name: Optional[str] = typer.Option(None, "--name"),
+    visibility: Optional[bool] = typer.Option(None, "--visible/--hidden"),
+    fields: str = typer.Option("{}", "--fields"),
+):
+    """Replace the file of a File resource and/or change its settings; its cmid (and
+    every link to it) stays."""
+    with browser(ctx) as moodle:
+        moodle.update_file(
+            _cid(ctx, course),
+            cmid,
+            file,
+            name=name,
+            visible=visibility,
+            fields=_parse_json_object(fields),
+        )
+    typer.echo(f"updated: {cmid}")
+
+
 @forums.command("list")
 def forums_list(
     ctx: typer.Context,

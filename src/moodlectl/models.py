@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 import re
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -53,6 +54,7 @@ class ResourceSpec:
     show_description: bool = False
     visible: bool | None = None
     display: str | None = None
+    file: str | Path | None = None  # local file of a `resource` (File) module
     fields: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -68,6 +70,11 @@ class ResourceSpec:
                 raise moodlectlError(f"URL resource requires an absolute http(s) URL: {self.url!r}")
         if self.kind == "page" and not self.content:
             raise moodlectlError("Page resource requires nonempty content")
+        if self.kind == "resource":
+            if not self.file or not Path(self.file).is_file():
+                raise moodlectlError(f"File resource requires an existing file: {self.file!r}")
+        elif self.file is not None:
+            raise moodlectlError("Only a 'resource' (File) module takes a file")
         if self.description_format not in ("markdown", "html", "plain", "auto"):
             raise moodlectlError("Invalid description_format")
         if not isinstance(self.fields, dict):

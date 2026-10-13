@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from getpass import getpass
 from typing import Any, Callable, Sequence
 
-from playwright.sync_api import sync_playwright, Page, Locator, TimeoutError as PWTimeout
+from playwright.sync_api import sync_playwright, expect, Page, Locator, TimeoutError as PWTimeout
 from playwright.sync_api import Error as PWError
 from bs4 import BeautifulSoup
 
@@ -94,6 +94,12 @@ SECTION_JS = r"""() => {
  }
  return result;
 }"""
+
+
+# Hidden inputs holding the draft itemid of a form's file area: a forum post's
+# attachments, and the files of a File (`resource`) module.
+POST_ATTACHMENTS = 'form#mformforum input[name="attachments"]'
+RESOURCE_FILES = 'form#mform1 input[name="files"] || form:has(#id_name) input[name="files"]'
 
 
 # Moodle AJAX call with the page's session; only functions flagged `ajax` work here.
@@ -466,9 +472,15 @@ class BrowserMoodle(AbstractContextManager):
         result = sorted(courses.values(), key=lambda c: c.name.casefold())
         return [c for c in result if not search or search.casefold() in c.name.casefold()]
 
+    @staticmethod
+    def _sections_of(p: Page) -> list[dict]:
+        # Right after a form save the course page may still be loading.
+        p.wait_for_load_state("load")
+        return p.evaluate(SECTION_JS)
+
     def course_sections(self, course_id: int) -> list[Section]:
         raw: list[dict] = self._scrape(
-            f"/course/view.php?id={int(course_id)}", lambda p: p.evaluate(SECTION_JS)
+            f"/course/view.php?id={int(course_id)}", self._sections_of
         )
         if not raw:
             raise moodlectlError("Cannot find Moodle course sections; check course access/layout")
@@ -619,14 +631,15 @@ class BrowserMoodle(AbstractContextManager):
             )
         raise MoodleFormError(f"Content field '{field}' not found")
 
-    def _populate(self, p: Page, spec: ResourceSpec, *, updating: bool = False) -> None:
+    def _populate(self, p: Page, spec: ResourceSpec, *, updating: bool = False) -> bool:
+        """Fill the form from `spec`; True if visibility is left for `_set_visible`."""
         spec.validate()
-        expand = p.get_by_text(re.compile(r"^(Expand all|Espandi tutto)$", re.I)).first
-        if expand.count() and expand.is_visible():
-            expand.click()
+        self._expand_all(p)
         self._locate(p, "#id_name").fill(spec.name)
         if spec.kind == "url":
             self._locate(p, "#id_externalurl").fill(spec.url or "")
+        if spec.kind == "resource" and spec.file is not None:
+            self._replace_files(p, RESOURCE_FILES, [Path(spec.file)])
         if spec.description:
             self._select_format(p, "#menuintroeditorformat", spec.description_format)
             desc = self._locate(p, "#id_introeditor")
@@ -640,14 +653,47 @@ class BrowserMoodle(AbstractContextManager):
             show.check() if spec.show_description else show.uncheck()
         elif spec.show_description:
             raise MoodleFormError("Moodle form lacks show-description checkbox")
-        if spec.visible is not None:
-            self._fill_field(p, "#id_visible", "1" if spec.visible else "0")
+        pending = spec.visible is not None and not self._visible_in_form(p, spec.visible)
         if spec.display is not None:
             self._fill_field(p, "#id_display", {"label": spec.display})
         if spec.kind == "page":
             self._fill_rich_text(p, "page", spec.content or "")
         for selector, value in spec.fields.items():
             self._fill_field(p, selector, value)
+        return pending
+
+    def _visible_in_form(self, p: Page, visible: bool) -> bool:
+        """Set visibility in the form, if the site shows that control. Virtuale hides it
+        (`#fitem_id_visible {display: none}`): then False, for `_set_visible` after saving."""
+        field = self._optional(p, "#id_visible")
+        if field is None or not field.is_visible():
+            return False
+        self._fill_field(p, "#id_visible", "1" if visible else "0")
+        return True
+
+    def _set_visible(self, p: Page, cmid: int, visible: bool) -> None:
+        """Show or hide a module as the course page's eye toggle does."""
+        self._ajax(p, "core_course_edit_module", action="show" if visible else "hide", id=cmid)
+
+    @staticmethod
+    def _expand_all(p: Page) -> None:
+        """Open every collapsed section of the form, so its controls can be filled."""
+        p.wait_for_load_state("load")  # the toggles do nothing until Moodle's JS is wired
+        collapsed = p.locator("form:has(#id_name) a.fheader.collapsed")
+        expand = p.locator("a.collapseexpand.collapsed").first
+        if expand.count() and expand.is_visible():
+            expand.click()
+        try:
+            expect(collapsed).to_have_count(0)
+            return
+        except AssertionError:
+            pass
+        for header in collapsed.all():  # no "Expand all", or it did not take
+            header.click()
+        try:
+            expect(collapsed).to_have_count(0)
+        except AssertionError as exc:
+            raise MoodleFormError("Could not expand every section of the form") from exc
 
     def _save(self, p: Page) -> None:
         button = self._locate(
@@ -690,17 +736,26 @@ class BrowserMoodle(AbstractContextManager):
                 return "skipped"
             raise moodlectlError(f"Resource already exists in section {target.name}: {spec.name}")
         p = self._edit_form(course_id=course_id, section_no=target.number, kind=spec.kind)
-        self._populate(p, spec)
+        pending = self._populate(p, spec)
         self._save(p)
         refreshed = self.select_section(course_id, target.number)
-        if not any(
-            r.name.casefold() == spec.name.casefold() and r.kind == spec.kind
+        created = [
+            r
             for r in refreshed.resources
-        ):
+            if r.name.casefold() == spec.name.casefold() and r.kind == spec.kind
+        ]
+        if not created:
             raise MoodleFormError(
                 f"Save returned but {spec.name!r} was not found in section {target.name}. "
                 "Inspect the course before retrying."
             )
+        cmid = created[0].cmid
+        if pending and spec.visible is not None:
+            if not cmid:
+                raise MoodleFormError(f"Created {spec.name!r}, but cannot set its visibility")
+            self._set_visible(p, cmid, spec.visible)
+        if spec.kind == "resource" and spec.file is not None and cmid:
+            self._check_file(p, cmid, Path(spec.file))
         return "created"
 
     def inspect_form(self, course_id: int, section: str | int, *, kind: str = "url") -> list[dict]:
@@ -778,8 +833,7 @@ class BrowserMoodle(AbstractContextManager):
         if show_description is not None:
             checkbox = self._locate(p, '#id_showdescription || input[type="checkbox"][name="showdescription"]')
             checkbox.check() if show_description else checkbox.uncheck()
-        if visible is not None:
-            self._fill_field(p, "#id_visible", "1" if visible else "0")
+        pending = visible is not None and not self._visible_in_form(p, visible)
         if display is not None:
             self._fill_field(p, "#id_display", {"label": display})
         for selector, value in (fields or {}).items():
@@ -787,6 +841,111 @@ class BrowserMoodle(AbstractContextManager):
         self._save(p)
         if not any(r.cmid == cmid for r in self.list_resources(course_id)):
             raise MoodleFormError(f"Resource cmid={cmid} missing after edit; inspect manually")
+        if pending and visible is not None:
+            self._set_visible(p, cmid, visible)
+
+    def update_file(
+        self,
+        course_id: int,
+        cmid: int,
+        file: str | Path | None = None,
+        *,
+        name: str | None = None,
+        visible: bool | None = None,
+        fields: dict | None = None,
+    ) -> None:
+        """Update a File (`resource`) module, keeping its cmid. With `file`, replace its
+        file and check that Moodle now serves exactly that file; without, settings only."""
+        self._writing()
+        file = Path(file) if file is not None else None
+        existing = [
+            r for r in self.list_resources(course_id) if r.cmid == cmid and r.kind == "resource"
+        ]
+        if len(existing) != 1:
+            raise moodlectlError(f"File resource cmid={cmid} not found in course {course_id}")
+        if file is not None:
+            ResourceSpec(kind="resource", name=name or existing[0].name, file=file).validate()
+        p = self._edit_form(cmid=cmid)
+        self._expand_all(p)
+        if name is not None:
+            if not name.strip():
+                raise moodlectlError("Updated name cannot be blank")
+            self._locate(p, "#id_name").fill(name)
+        if file is not None:
+            self._replace_files(p, RESOURCE_FILES, [file])
+        pending = visible is not None and not self._visible_in_form(p, visible)
+        for selector, value in (fields or {}).items():
+            self._fill_field(p, selector, value)
+        self._save(p)
+        if not any(r.cmid == cmid for r in self.list_resources(course_id)):
+            raise MoodleFormError(f"Resource cmid={cmid} missing after edit; inspect manually")
+        if pending and visible is not None:
+            self._set_visible(p, cmid, visible)
+        if file is not None:
+            self._check_file(p, cmid, file)
+
+    def _check_file(self, p: Page, cmid: int, file: Path) -> None:
+        """Download what File module `cmid` serves and compare it with `file`."""
+        res = p.request.get(
+            f"{self.site}/mod/resource/view.php?" + urlencode({"id": cmid, "redirect": 1})
+        )
+        served = res.body() if res.ok else b""
+        if hashlib.sha256(served).digest() != hashlib.sha256(file.read_bytes()).digest():
+            raise MoodleFormError(
+                f"Saved, but resource cmid={cmid} does not serve {file.name} "
+                f"(HTTP {res.status}); inspect it in the browser"
+            )
+
+    def _draft(self, p: Page, field_selector: str) -> tuple[str, str]:
+        """Return (sesskey, draft itemid) of the open form's file area at `field_selector`."""
+        field = None
+        for selector in field_selector.split(" || "):
+            field = self._optional(p, selector)
+            if field is not None:
+                break
+        if field is None:
+            raise MoodleFormError(f"This Moodle form has no file area: {field_selector}")
+        return p.evaluate("() => M.cfg.sesskey"), field.input_value()
+
+    def _draft_files(self, p: Page, sesskey: str, itemid: str) -> list[dict]:
+        res = p.request.post(
+            f"{self.site}/repository/draftfiles_ajax.php?action=list",
+            form={"sesskey": sesskey, "itemid": itemid, "filepath": "/"},
+        )
+        try:
+            return list(res.json().get("list", []))
+        except (ValueError, AttributeError) as exc:
+            raise MoodleFormError(
+                f"Moodle did not list the draft files (HTTP {res.status})"
+            ) from exc
+
+    def _replace_files(self, p: Page, field_selector: str, files: Sequence[Path]) -> None:
+        """Empty the form's file area, as its file manager's Delete does, then upload `files`.
+        Nothing reaches the module until the form is saved."""
+        sesskey, itemid = self._draft(p, field_selector)
+        for entry in self._draft_files(p, sesskey, itemid):
+            if entry.get("type") == "folder":
+                raise MoodleFormError(
+                    f"The file area holds a folder ({entry.get('filename')}); edit it by hand"
+                )
+            res = p.request.post(
+                f"{self.site}/repository/draftfiles_ajax.php?action=delete",
+                form={
+                    "sesskey": sesskey,
+                    "itemid": itemid,
+                    "filepath": entry.get("filepath") or "/",
+                    "filename": entry["filename"],
+                },
+            )
+            try:
+                deleted = res.json()
+            except ValueError:
+                deleted = False
+            if not deleted:
+                raise MoodleFormError(f"Moodle refused to remove {entry['filename']} from the form")
+        if self._draft_files(p, sesskey, itemid):
+            raise MoodleFormError("The form's file area is still not empty; nothing was saved")
+        self._upload(p, files, field_selector)
 
     # --- Forums -------------------------------------------------------------------------
 
@@ -847,7 +1006,7 @@ class BrowserMoodle(AbstractContextManager):
         """Submit the forum post form at `path` (already open as `p`, if given)."""
         self._writing()
         p = p or self._goto(path)
-        self._upload(p, attachments)
+        self._upload(p, attachments, POST_ATTACHMENTS)
         res = p.evaluate(POST_FORM_JS, values)
         if res.get("missing"):
             detail = f": {self._main_text(p)}" if "form#mformforum" in res["missing"] else ""
@@ -857,18 +1016,16 @@ class BrowserMoodle(AbstractContextManager):
                 "Moodle rejected the post: " + (" | ".join(res["errors"]) or "unknown error")
             )
 
-    def _upload(self, p: Page, files: Sequence[Path]) -> None:
-        """Upload `files` into the open post form's attachments draft area, like its
-        file picker's "Upload a file" does."""
+    def _upload(self, p: Page, files: Sequence[Path], field_selector: str) -> None:
+        """Upload `files` into the draft area of the open form's file field at
+        `field_selector`, like its file picker's "Upload a file" does."""
         if not files:
             return
-        field = self._optional(p, 'form#mformforum input[name="attachments"]')
-        if field is None:
-            raise MoodleFormError("This Moodle post form does not accept attachments")
+        sesskey, itemid = self._draft(p, field_selector)
         repo = re.search(r'"(\d+)":\{"id":"\d+","name":"[^"]*","type":"upload"', p.content())
         if not repo:
             raise MoodleFormError("Moodle offers no file upload repository on this form")
-        sesskey, context = p.evaluate("() => [M.cfg.sesskey, M.cfg.contextid]")
+        context = p.evaluate("() => M.cfg.contextid")
         for file in files:
             res = p.request.post(
                 f"{self.site}/repository/repository_ajax.php?action=upload",
@@ -881,7 +1038,7 @@ class BrowserMoodle(AbstractContextManager):
                     },
                     "sesskey": sesskey,
                     "repo_id": repo[1],
-                    "itemid": field.input_value(),
+                    "itemid": itemid,
                     "ctx_id": str(context),
                     "savepath": "/",
                     "title": file.name,

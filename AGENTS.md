@@ -35,6 +35,10 @@ uv run poe static-fixes       # ruff --fix + ruff format
 uv run poe coverage && uv run poe coverage-report
 ```
 
+`uv run poe install-hooks` (once per clone) points `core.hooksPath` at `.githooks/`, whose
+`pre-push` runs static-checks + coverage like CI's `check` job; it does not run the OS/Python
+matrix.
+
 CI (`.github/workflows/check.yml`) runs static-checks + coverage on 3.12, then tests
 on ubuntu/windows/macos x Python 3.10-3.13, then the semantic-release deploy.
 

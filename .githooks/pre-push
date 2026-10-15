@@ -1,0 +1,12 @@
+#!/bin/sh
+# Run locally what the "check" job of .github/workflows/check.yml runs, before every push.
+# Enable once per clone with `uv run poe install-hooks`; skip one push with `git push --no-verify`.
+set -e
+
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    echo "pre-push: uncommitted changes are checked too, not only the pushed commits" >&2
+fi
+
+uv run poe static-checks
+uv run poe coverage
+uv run poe coverage-report

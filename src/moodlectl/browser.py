@@ -635,7 +635,9 @@ class BrowserMoodle(AbstractContextManager):
             blank = self._optional(p, "#id_introeditor")
             if blank and blank.is_visible():
                 blank.fill("")
-        show = self._optional(p, '#id_showdescription, input[type="checkbox"][name="showdescription"]')
+        show = self._optional(
+            p, '#id_showdescription, input[type="checkbox"][name="showdescription"]'
+        )
         if show is not None:
             show.check() if spec.show_description else show.uncheck()
         elif spec.show_description:
@@ -727,7 +729,9 @@ class BrowserMoodle(AbstractContextManager):
         p = self._edit_form(cmid=cmid)
         desc = self._optional(p, "#id_introeditor")
         fmt = self._optional(p, "#menuintroeditorformat")
-        show = self._optional(p, '#id_showdescription, input[type="checkbox"][name="showdescription"]')
+        show = self._optional(
+            p, '#id_showdescription, input[type="checkbox"][name="showdescription"]'
+        )
         visible = self._optional(p, "#id_visible")
         display = self._optional(p, "#id_display")
         return {
@@ -776,7 +780,9 @@ class BrowserMoodle(AbstractContextManager):
             if description is not None:
                 self._locate(p, "#id_introeditor").fill(description)
         if show_description is not None:
-            checkbox = self._locate(p, '#id_showdescription || input[type="checkbox"][name="showdescription"]')
+            checkbox = self._locate(
+                p, '#id_showdescription || input[type="checkbox"][name="showdescription"]'
+            )
             checkbox.check() if show_description else checkbox.uncheck()
         if visible is not None:
             self._fill_field(p, "#id_visible", "1" if visible else "0")

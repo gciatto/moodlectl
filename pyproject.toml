@@ -55,6 +55,7 @@ mypy = "mypy src tests --ignore-missing-imports"
 compile = "python -m compileall -q src tests"
 static-checks = ["compile", "format-check", "ruff-check", "mypy"]
 static-fixes = ["ruff-fix", "format"]
+install-hooks = "git config core.hooksPath .githooks"
 
 [[tool.uv.index]]
 name = "testpypi"

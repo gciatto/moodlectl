@@ -9,7 +9,7 @@ jobs:
     name: Preliminary checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v6
@@ -39,7 +39,7 @@ jobs:
     name: Test on Python ${{ matrix.python-version }}, on ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}

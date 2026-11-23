@@ -2,9 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from moodlectl.browser import RESOURCE_FILES, BrowserMoodle
+from moodlectl.browser import RESOURCE_FILES, BrowserMoodle, served_filename
 from moodlectl.config import Settings
-from moodlectl.errors import MoodleFormError, moodlectlError
+from moodlectl.errors import LoginRequired, MoodleFormError, moodlectlError
 from moodlectl.manifest import load_manifest
 from moodlectl.models import ResourceSpec
 
@@ -116,3 +116,110 @@ def test_manifest_file_is_relative_to_the_manifest(tmp_path, pdf):
         "course: 1\nsection: 2\nresources:\n  - kind: resource\n    name: M5\n    file: M5.pdf\n"
     )
     assert load_manifest(manifest).resources[0].file == pdf
+
+
+PLUGINFILE = (
+    "https://virtuale.unibo.it/pluginfile.php/123/mod_resource/content/4/M5%20-%20Agents.pdf"
+)
+
+
+class FakeServedPage:
+    """A page whose request.get answers like mod/resource/view.php?redirect=1."""
+
+    def __init__(self, url=PLUGINFILE, body=b"%PDF-served", status=200, headers=None):
+        self.got = []
+
+        def get(u):
+            self.got.append(u)
+            return SimpleNamespace(
+                url=url,
+                body=lambda: body,
+                status=status,
+                ok=status < 400,
+                headers=headers or {},
+            )
+
+        self.request = SimpleNamespace(get=get)
+
+
+@pytest.fixture
+def served(moodle, monkeypatch):
+    def serve(**kwargs):
+        page = FakeServedPage(**kwargs)
+        monkeypatch.setattr(moodle, "_start", lambda: page)
+        return page
+
+    moodle.site = "https://virtuale.unibo.it"
+    return serve
+
+
+def test_served_filename_prefers_content_disposition():
+    assert served_filename({}, "/pluginfile.php/1/x/M5%20-%20Agents.pdf") == "M5 - Agents.pdf"
+    assert served_filename({"Content-Disposition": 'inline; filename="a b.pdf"'}, "/x") == "a b.pdf"
+    assert served_filename({"content-disposition": "attachment; filename=plain.pdf"}, "/x") == (
+        "plain.pdf"
+    )
+    utf8 = "attachment; filename=\"x.pdf\"; filename*=UTF-8''Lezione%20%C3%A8.pdf"
+    assert served_filename({"Content-Disposition": utf8}, "/x") == "Lezione è.pdf"
+    # Moodle's raw UTF-8 name, as Playwright hands it over (decoded as Latin-1)
+    raw = 'inline; filename="A0 – About the Course.pdf"'.encode().decode("latin-1")
+    assert served_filename({"content-disposition": raw}, "/x") == "A0 – About the Course.pdf"
+    assert served_filename({"Content-Disposition": 'filename="caf\xe9.pdf"'}, "/x") == "café.pdf"
+
+
+def test_served_filename_never_returns_a_path():
+    bad = {"Content-Disposition": 'attachment; filename="../../etc/passwd"'}
+    assert served_filename(bad, "/x") == "passwd"
+    assert served_filename({"Content-Disposition": 'filename="..\\evil.pdf"'}, "/x") == "evil.pdf"
+    with pytest.raises(moodlectlError):
+        served_filename({}, "/pluginfile.php/1/..")
+
+
+def test_download_keeps_the_served_name_in_a_directory(moodle, served, tmp_path):
+    page = served()
+    path = moodle.download_file(42, tmp_path)
+    assert path == tmp_path / "M5 - Agents.pdf"
+    assert path.read_bytes() == b"%PDF-served"
+    assert page.got == ["https://virtuale.unibo.it/mod/resource/view.php?id=42&redirect=1"]
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_download_to_a_file_path_and_overwrite(moodle, served, tmp_path):
+    served()
+    target = tmp_path / "mine.pdf"
+    target.write_bytes(b"old")
+    with pytest.raises(moodlectlError, match="already exists"):
+        moodle.download_file(42, target)
+    assert target.read_bytes() == b"old"
+    assert moodle.download_file(42, target, overwrite=True) == target
+    assert target.read_bytes() == b"%PDF-served"
+
+
+def test_download_defaults_to_the_current_directory(moodle, served, tmp_path, monkeypatch):
+    served()
+    monkeypatch.chdir(tmp_path)
+    assert moodle.download_file(42) == tmp_path / "M5 - Agents.pdf"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://virtuale.unibo.it/login/index.php",
+        "https://idp.unibo.it/adfs/ls/?SAMLRequest=x",
+    ],
+)
+def test_download_reports_an_expired_session(moodle, served, tmp_path, url):
+    served(url=url, body=b"<html>login</html>")
+    with pytest.raises(LoginRequired):
+        moodle.download_file(42, tmp_path)
+    assert not any(tmp_path.iterdir())
+
+
+def test_download_refuses_what_is_not_a_file(moodle, served, tmp_path):
+    served(url="https://virtuale.unibo.it/mod/url/view.php?id=42", body=b"<html/>")
+    with pytest.raises(moodlectlError, match="did not lead to a file"):
+        moodle.download_file(42, tmp_path)
+    served(status=404)
+    with pytest.raises(moodlectlError, match="HTTP 404"):
+        moodle.download_file(42, tmp_path)
+    assert not any(tmp_path.iterdir())

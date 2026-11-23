@@ -13,7 +13,7 @@ from contextlib import AbstractContextManager
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 from getpass import getpass
 from typing import Any, Callable, Sequence
 
@@ -236,6 +236,33 @@ STEP_JS = r"""() => {
    .map(([e, t], i) => ({key: tag(e, 'a' + i), label: t.slice(0, 80)}));
  return {text: document.body.innerText.replace(/\s+/g, ' ').trim().slice(0, 1000), fields, actions};
 }"""
+
+
+def served_filename(headers: dict[str, str], path: str) -> str:
+    """The file name a download response names: Content-Disposition's `filename*` or
+    `filename`, else the URL's last segment; reduced to a bare name, never a path."""
+    disposition = {k.lower(): v for k, v in headers.items()}.get("content-disposition", "")
+    name = ""
+    m = re.search(r"filename\*\s*=\s*([^']*)'[^']*'([^;]+)", disposition, re.I)
+    if m:
+        try:
+            name = unquote(m.group(2).strip().strip('"'), encoding=m.group(1) or "utf-8")
+        except LookupError:  # unknown charset: assume Moodle's UTF-8
+            name = unquote(m.group(2).strip().strip('"'))
+    else:
+        m = re.search(r'filename\s*=\s*"([^"]*)"|filename\s*=\s*([^;]+)', disposition, re.I)
+        if m:
+            name = (m.group(1) if m.group(1) is not None else m.group(2)).strip()
+            try:  # Moodle sends raw UTF-8, which HTTP clients decode as Latin-1
+                name = name.encode("latin-1").decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+    if not name:
+        name = unquote(path.rstrip("/").rsplit("/", 1)[-1])
+    name = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if name in ("", ".", ".."):
+        raise moodlectlError("Moodle served a file without a usable name; give a file path")
+    return name
 
 
 class BrowserMoodle(AbstractContextManager):
@@ -888,11 +915,53 @@ class BrowserMoodle(AbstractContextManager):
         if file is not None:
             self._check_file(p, cmid, file)
 
-    def _check_file(self, p: Page, cmid: int, file: Path) -> None:
-        """Download what File module `cmid` serves and compare it with `file`."""
-        res = p.request.get(
+    def download_file(
+        self, cmid: int, dest: str | Path | None = None, *, overwrite: bool = False
+    ) -> Path:
+        """Save the file that File module `cmid` serves. `dest` is a file path, or a
+        directory (default: the current one) where the served file name is kept.
+        An existing file is replaced only with `overwrite`."""
+        p = self._start()
+        res = self._served(p, cmid)
+        if not res.ok:
+            raise moodlectlError(
+                f"Resource cmid={cmid} could not be downloaded (HTTP {res.status}); "
+                "is it a File resource you can see?"
+            )
+        url = urlsplit(res.url)
+        site_path = urlsplit(self.site).path.rstrip("/")
+        if url.netloc != urlsplit(self.site).netloc or url.path.startswith(
+            (site_path + "/login/", site_path + "/auth/")
+        ):
+            raise LoginRequired(
+                "Moodle redirected to login/SSO. Run `moodlectl login` interactively "
+                "using the same --profile and --site."
+            )
+        if "/pluginfile.php/" not in url.path:
+            raise moodlectlError(
+                f"Resource cmid={cmid} did not lead to a file (got {res.url}); "
+                "is it a File resource you can see?"
+            )
+        target = Path(dest) if dest is not None else Path.cwd()
+        if target.is_dir():
+            target = target / served_filename(res.headers, url.path)
+        if target.exists() and not overwrite:
+            raise moodlectlError(f"{target} already exists; use --overwrite to replace it")
+        body = res.body()
+        partial = target.with_name(target.name + ".part")
+        partial.write_bytes(body)
+        partial.replace(target)
+        return target
+
+    def _served(self, p: Page, cmid: int) -> Any:
+        """GET what File module `cmid` serves, following Moodle's redirect to the file."""
+        return p.request.get(
             f"{self.site}/mod/resource/view.php?" + urlencode({"id": cmid, "redirect": 1})
         )
+
+    def _check_file(self, p: Page, cmid: int, file: Path) -> None:
+        """Download what File module `cmid` serves and compare it with `file`."""
+        res = self._served(p, cmid)
         served = res.body() if res.ok else b""
         if hashlib.sha256(served).digest() != hashlib.sha256(file.read_bytes()).digest():
             raise MoodleFormError(

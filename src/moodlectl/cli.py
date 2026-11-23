@@ -477,6 +477,21 @@ def update_file(
     typer.echo(f"updated: {cmid}")
 
 
+@resources.command("download")
+def download(
+    ctx: typer.Context,
+    cmid: int,
+    dest: Optional[str] = typer.Argument(
+        None, help="File path, or directory keeping the served name (default: current one)"
+    ),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Replace an existing file"),
+):
+    """Download the file a File resource serves."""
+    with browser(ctx) as moodle:
+        path = moodle.download_file(cmid, dest, overwrite=overwrite)
+    typer.echo(f"downloaded: {cmid} -> {path}")
+
+
 @resources.command("move")
 def move(
     ctx: typer.Context,

@@ -143,6 +143,11 @@ moodlectl resources add-file "M5 - Agents" slides/m5.pdf --section "Module 2"
 moodlectl resources update-file 12346 slides/m5.pdf
 moodlectl resources update-file 12346 --fields '{"#id_showsize": true}'  # settings only
 
+# Download the file a File resource serves: into a directory (default: the current one),
+# keeping its served name, or to a file path; an existing file needs --overwrite
+moodlectl resources download 12346 slides/
+moodlectl resources download 12346 slides/m5.pdf --overwrite
+
 # Move modules just above another one, in the order given (as drag and drop does)
 moodlectl resources move 12346 12347 --before 12340
 

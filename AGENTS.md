@@ -66,6 +66,10 @@ on ubuntu/windows/macos x Python 3.10-3.13, then the semantic-release deploy.
   section toggles work only after the `load` event (`_expand_all`), and site CSS hides
   `#fitem_id_visible`, so visibility goes through `core_course_edit_module` show/hide
   (`_set_visible`). `resources list` still reports hidden modules as visible.
+  `download_file` saves what that same URL serves (validated live on Virtuale, 2026-11-24):
+  it must end on `pluginfile.php` of the site, or it raises (`LoginRequired` after an SSO
+  redirect); the name comes from `served_filename()` (Content-Disposition, whose raw UTF-8
+  arrives decoded as Latin-1, else the URL), always reduced to a bare name.
   `move_resource` calls `core_courseformat_update_course` (`cm_move`, `targetcmid`) through
   `AJAX_JS`, the course page's drag and drop, then re-reads the order; validated live on
   Virtuale (2026-10-13). Other `kind`s go through the generic `modedit.php?add=<kind>` path and need
